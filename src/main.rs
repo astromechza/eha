@@ -177,7 +177,7 @@ enum Entry {
 impl From<&str> for Entry {
     fn from(value: &str) -> Self {
         if let Some((a, b)) = value.split_once("# eha ") {
-            if let Some(name) = a.trim().split_whitespace().last() {
+            if let Some(name) = a.split_whitespace().last() {
                 let mut exp = Timestamp::default();
                 let mut comment: Option<String> = None;
                 for x in b.split(',') {
