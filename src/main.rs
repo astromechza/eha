@@ -44,8 +44,8 @@ struct Args {
 
 #[derive(Parser, Debug, Clone)]
 enum Subcommand {
-    /// Add a new DNS name for 127.0.0.1
-    Add{
+    /// Add a new DNS name for 127.0.0.1.
+    Add {
         #[arg(help = "The DNS name ending in .local or .localhost to add.")]
         name: String,
 
@@ -57,12 +57,12 @@ enum Subcommand {
         )]
         expire_minutes: usize,
     },
-    /// Remove a DNS name added by eha
-    Remove{
+    /// Remove a DNS name added by eha.
+    Remove {
         #[arg(help = "The DNS name ending in .local or .localhost to remove.")]
         name: String,
     },
-    /// List the DNS names added by eha
+    /// Remove any expired entries added by eha.
     RemoveExpired,
 }
 
@@ -85,7 +85,7 @@ impl Args {
                     }
                     Ok(())
                 }
-            },
+            }
             Subcommand::Remove { .. } => Ok(()),
             Subcommand::RemoveExpired => Ok(()),
         }
@@ -123,7 +123,7 @@ impl Args {
                 let n = name;
                 entries.retain_mut(|e| match e {
                     Supported { name, .. } => name.ne(&n),
-                    Other(_) => true
+                    Other(_) => true,
                 })
             }
             Subcommand::RemoveExpired => {}
@@ -298,7 +298,7 @@ mod tests {
         let args = Args {
             subcommand: Subcommand::Add {
                 name: "foo.local".to_string(),
-                expire_minutes:1,
+                expire_minutes: 1,
             },
             input_file: f.path().to_string_lossy().to_string(),
             test: false,
