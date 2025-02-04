@@ -26,25 +26,14 @@ fn main_err() -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(
     version,
     about = "eha (etc-hosts-adder) adds, removes, or expires temporary localhost names from the /etc/hosts file."
 )]
 struct Args {
-    #[arg(help = "The DNS name ending in .local or .localhost to add or remove.")]
-    name: Option<String>,
-
-    #[arg(short, long, help = "Remove the given DNS name if present.")]
-    remove: bool,
-
-    #[arg(
-        short,
-        long,
-        help = "Expiry in minutes for the entry, the entry is subject to removal after this time.",
-        default_value = "1440"
-    )]
-    expire_minutes: usize,
+    #[command(subcommand)]
+    subcommand: Subcommand,
 
     #[clap(long, help = "Operate on the given hosts file.", default_value = "/etc/hosts")]
     input_file: String,
@@ -53,25 +42,53 @@ struct Args {
     test: bool,
 }
 
+#[derive(Parser, Debug, Clone)]
+enum Subcommand {
+    /// Add a new DNS name for 127.0.0.1
+    Add{
+        #[arg(help = "The DNS name ending in .local or .localhost to add.")]
+        name: String,
+
+        #[arg(
+            short,
+            long,
+            help = "Expiry in minutes for the entry, the entry is subject to removal after this time.",
+            default_value = "1440"
+        )]
+        expire_minutes: usize,
+    },
+    /// Remove a DNS name added by eha
+    Remove{
+        #[arg(help = "The DNS name ending in .local or .localhost to remove.")]
+        name: String,
+    },
+    /// List the DNS names added by eha
+    RemoveExpired,
+}
+
 impl Args {
     fn validate(&self) -> Result<(), Error> {
-        if let Some(name) = &self.name {
-            if !name.ends_with(".local") && !name.ends_with(".localhost") {
-                return Err(anyhow!("name must end in .local or .localhost"));
-            } else if !(1..525600).contains(&self.expire_minutes) {
-                return Err(anyhow!("ttl minutes must be between 1m and 365d (inclusive)"));
-            } else {
-                for (i, x) in name.split('.').enumerate() {
-                    let l = x.len();
-                    if l == 0 {
-                        return Err(anyhow!("invalid DNS name #{}: cannot be empty", i));
-                    } else if let Some((j, c, _)) = x.chars().enumerate().map(|(a, b)| (a, b, l)).find(invalid_dns_name_char) {
-                        return Err(anyhow!("invalid DNS name char in part #{} @ {}: {}", i, j, c));
+        match &self.subcommand {
+            Subcommand::Add { name, expire_minutes } => {
+                if !name.ends_with(".local") && !name.ends_with(".localhost") {
+                    Err(anyhow!("name must end in .local or .localhost"))
+                } else if !(1..525600).contains(expire_minutes) {
+                    Err(anyhow!("ttl minutes must be between 1m and 365d (inclusive)"))
+                } else {
+                    for (i, x) in name.split('.').enumerate() {
+                        let l = x.len();
+                        if l == 0 {
+                            return Err(anyhow!("invalid DNS name #{}: cannot be empty", i));
+                        } else if let Some((j, c, _)) = x.chars().enumerate().map(|(a, b)| (a, b, l)).find(invalid_dns_name_char) {
+                            return Err(anyhow!("invalid DNS name char in part #{} @ {}: {}", i, j, c));
+                        }
                     }
+                    Ok(())
                 }
-            }
+            },
+            Subcommand::Remove { .. } => Ok(()),
+            Subcommand::RemoveExpired => Ok(()),
         }
-        Ok(())
     }
 
     fn run(&self) -> Result<Option<String>, Error> {
@@ -87,33 +104,33 @@ impl Args {
         eprintln!("read {} entries from existing file {}", entries.len(), &self.input_file);
 
         let now = Timestamp::now();
-        let mut after_entries = entries
-            .iter()
-            .filter(|e| match (self.name.as_ref(), e) {
-                // filter out expired items
-                (_, Supported { meta, .. }) if meta.expiry < now => false,
-                // filter out items that have the target name
-                (Some(n), Supported { name, .. }) if name == n => false,
-                // keep anything else
-                (_, _) => true,
-            })
-            .map(String::from)
-            .collect::<Vec<_>>();
+        entries.retain_mut(|e| match e {
+            Supported { meta, .. } => meta.expiry > now,
+            Other(_) => true,
+        });
 
-        if let Some(n) = self.name.as_ref() {
-            if !self.remove {
-                after_entries.push(String::from(&Supported {
-                    name: n.to_string(),
+        match &self.subcommand {
+            Subcommand::Add { name, expire_minutes } => {
+                entries.push(Supported {
+                    name: name.to_string(),
                     meta: SupportedMeta {
-                        expiry: now.add(SignedDuration::from_mins(self.expire_minutes as i64)),
+                        expiry: now.add(SignedDuration::from_mins(*expire_minutes as i64)),
                         comment: Some(format!("set from {} at {}", current_dir().unwrap_or_default().to_string_lossy(), &now,).to_string()),
                     },
-                }))
+                });
             }
+            Subcommand::Remove { name } => {
+                let n = name;
+                entries.retain_mut(|e| match e {
+                    Supported { name, .. } => name.ne(&n),
+                    Other(_) => true
+                })
+            }
+            Subcommand::RemoveExpired => {}
         }
 
         if self.test {
-            return Ok(Some(after_entries.join("\n")));
+            return Ok(Some(entries.iter().map(String::from).collect::<Vec<String>>().join("\n")));
         }
 
         let mut temp_file_path = std::env::temp_dir();
@@ -124,7 +141,7 @@ impl Args {
             &self.input_file
         );
         let mut file = File::create(&temp_file_path).context("failed to create temp file")?;
-        file.write_all(after_entries.join("\n").as_bytes())
+        file.write_all(entries.iter().map(String::from).collect::<Vec<String>>().join("\n").as_bytes())
             .context("failed to write content")?;
         rename(&temp_file_path, &self.input_file).context("failed to rename temp file to input file")?;
         Ok(None)
@@ -202,9 +219,7 @@ mod tests {
 127.0.0.1	foo.local	# eha {"expiry":"2030-01-01T00:00:00Z","comment":"hello world"}"##;
         f.write_all(input.as_bytes())?;
         let args = Args {
-            name: None,
-            remove: false,
-            expire_minutes: 1,
+            subcommand: Subcommand::RemoveExpired,
             input_file: f.path().to_string_lossy().to_string(),
             test: true,
         };
@@ -226,9 +241,10 @@ mod tests {
 127.0.0.1	foo.local	# eha {"expiry":"2001-01-01T00:00:00Z","comment":"hello world"}"##,
         )?;
         let args = Args {
-            name: Some("thing.local".to_string()),
-            remove: false,
-            expire_minutes: 1,
+            subcommand: Subcommand::Add {
+                name: "thing.local".to_string(),
+                expire_minutes: 1,
+            },
             input_file: f.path().to_string_lossy().to_string(),
             test: true,
         };
@@ -251,9 +267,9 @@ mod tests {
 127.0.0.1	foo.local	# eha {"expiry":"2030-01-01T00:00:00Z","comment":"hello world"}"##,
         )?;
         let args = Args {
-            name: Some("foo.local".to_string()),
-            remove: true,
-            expire_minutes: 1,
+            subcommand: Subcommand::Remove {
+                name: "foo.local".to_string(),
+            },
             input_file: f.path().to_string_lossy().to_string(),
             test: true,
         };
@@ -280,9 +296,10 @@ mod tests {
 10.0.0.9    other.name"##,
         )?;
         let args = Args {
-            name: Some("foo.local".to_string()),
-            remove: false,
-            expire_minutes: 1,
+            subcommand: Subcommand::Add {
+                name: "foo.local".to_string(),
+                expire_minutes:1,
+            },
             input_file: f.path().to_string_lossy().to_string(),
             test: false,
         };
