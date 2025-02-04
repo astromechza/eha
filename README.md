@@ -34,9 +34,3 @@ By default, this will read `/etc/hosts` and write to it afterwards, but, you can
 ```
 cargo install eha
 ```
-
-## Todo:
-
-- [ ] publish crate
-- [ ] licence
-- [ ] write a blog post
